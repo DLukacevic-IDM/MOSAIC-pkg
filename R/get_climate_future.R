@@ -1,3 +1,19 @@
+fetch_with_retry <- function(url, max_retries = 5, base_wait = 60) {
+     for (attempt in seq_len(max_retries)) {
+          resp <- httr::GET(url, httr::timeout(120))
+          code <- httr::status_code(resp)
+          if (code == 200) return(resp)
+          if (code == 429 || code >= 500) {
+               wait <- base_wait * 2^(attempt - 1)
+               message(glue::glue("HTTP {code} — retrying in {wait}s (attempt {attempt}/{max_retries})"))
+               Sys.sleep(wait)
+          } else {
+               break
+          }
+     }
+     return(resp)
+}
+
 #' Download Future Climate Data for Multiple Locations (One Model at a Time)
 #'
 #' This function retrieves daily future climate data for multiple specified locations and climate variables over a specified date range using a specified climate model.
@@ -51,7 +67,10 @@
 #' }
 #'
 #' @details
-#' The function retrieves daily future climate data for multiple specified locations using the Open-Meteo Climate API. It downloads the specified climate variables for each latitude and longitude provided, using a single climate model. The data is retrieved for the date range specified by \code{date_start} and \code{date_stop}. A progress bar is displayed to indicate the download progress.
+#' The function retrieves daily future climate data for multiple specified locations using the Open-Meteo
+#' Climate API. Locations are batched into groups of up to 1,000 per request, and all climate variables
+#' are fetched in a single API call per batch. Failed requests are retried with exponential backoff
+#' (up to 5 attempts). The API requires a paid key (customer-climate-api.open-meteo.com).
 #'
 #' @examples
 #' \dontrun{
@@ -114,59 +133,68 @@ get_climate_future <- function(lat,
      }
 
      variables_param <- paste(climate_variables, collapse = ",")
-
+     chunk_size <- 1000L
+     n_chunks <- ceiling(length(lat) / chunk_size)
      results_list <- list()
 
-     pb <- txtProgressBar(min = 0, max = length(lat), style = 3)
+     for (chunk in seq_len(n_chunks)) {
 
-     for (i in seq_along(lat)) {
+          idx <- seq((chunk - 1L) * chunk_size + 1L, min(chunk * chunk_size, length(lat)))
+          lat_chunk <- lat[idx]
+          lon_chunk <- lon[idx]
+
+          message(glue::glue("Fetching chunk {chunk}/{n_chunks} ({length(idx)} locations)"))
 
           url <- paste0(
                "https://customer-climate-api.open-meteo.com/v1/climate?",
-               "latitude=", lat[i],
-               "&longitude=", lon[i],
+               "latitude=", paste(lat_chunk, collapse = ","),
+               "&longitude=", paste(lon_chunk, collapse = ","),
                "&start_date=", date_start,
                "&end_date=", date_stop,
                "&models=", climate_model,
                "&daily=", variables_param,
-               "&apikey=", api_key
+               if (!is.null(api_key)) paste0("&apikey=", api_key) else ""
           )
 
-          response <- httr::GET(url)
+          response <- fetch_with_retry(url)
 
           if (httr::status_code(response) == 200) {
 
-               data <- jsonlite::fromJSON(httr::content(response, "text", encoding = "UTF-8"))
-               dates <- data$daily$time
-               if (is.character(dates)) dates <- as.Date(substr(dates, 1, 10)) # trim hours if present
+               raw <- jsonlite::fromJSON(
+                    httr::content(response, "text", encoding = "UTF-8"),
+                    simplifyVector = FALSE
+               )
 
-               for (variable in climate_variables) {
+               # Single location -> object with $daily; multiple -> list of objects
+               locations <- if (!is.null(raw$daily)) list(raw) else raw
 
-                    if (!is.null(data$daily[[variable]])) {
+               for (loc in locations) {
+                    dates <- as.Date(substr(unlist(loc$daily$time), 1, 10))
+                    lat_j <- unlist(loc$latitude)
+                    lon_j <- unlist(loc$longitude)
 
-                         results_list[[paste0(i, "_", variable)]] <-
-                              data.frame(date = dates,
-                                         latitude = lat[i],
-                                         longitude = lon[i],
-                                         climate_model = climate_model,
-                                         variable_name = variable,
-                                         value = data$daily[[variable]])
-
+                    for (variable in climate_variables) {
+                         vals <- loc$daily[[variable]]
+                         if (!is.null(vals)) {
+                              results_list[[length(results_list) + 1L]] <- data.frame(
+                                   date = dates,
+                                   latitude = lat_j,
+                                   longitude = lon_j,
+                                   climate_model = climate_model,
+                                   variable_name = variable,
+                                   value = unlist(vals)
+                              )
+                         }
                     }
                }
 
           } else {
-               warning(paste("Failed to retrieve data for lat:", lat[i], "lon:", lon[i]))
+               warning(paste("Failed to retrieve data for chunk", chunk,
+                             "— HTTP", httr::status_code(response)))
           }
-
-          # Update progress bar
-          setTxtProgressBar(pb, i)
      }
-
-     close(pb)
 
      results_df <- do.call(rbind, results_list)
      rownames(results_df) <- NULL
-
      return(results_df)
 }
