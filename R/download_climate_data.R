@@ -91,50 +91,67 @@ download_climate_data <- function(PATHS,
           dir.create(PATHS$DATA_CLIMATE, recursive = TRUE)
      }
 
+     is_free <- identical(api_key, "free")
+
+     if (is_free) {
+          n_days <- as.integer(as.Date(date_stop) - as.Date(date_start)) + 1L
+          estimated_calls <- length(climate_models) * length(iso_codes) * n_points *
+                             length(climate_variables) * 263.5 * (n_days / 36500)
+          if (estimated_calls > 0.8 * 300000L) {
+               warning(glue::glue(
+                    "Estimated API call-equivalent cost ({round(estimated_calls)}) exceeds ",
+                    "80% of the free tier monthly limit (300000). ",
+                    "The request may hit the free API limit."
+               ))
+          }
+     }
+
+     n_cores <- if (is_free) 1L else max(1L, parallel::detectCores() - 1L)
+
      for (climate_model in climate_models) {
 
-          for (country_iso_code in iso_codes) {
-
+          process_country <- function(country_iso_code) {
                message(glue::glue("Downloading climate data for {country_iso_code} using {climate_model} at {n_points} points"))
 
                country_name <- MOSAIC::convert_iso_to_country(country_iso_code)
-               country_shp <- sf::st_read(dsn = file.path(PATHS$DATA_SHAPEFILES, paste0(country_iso_code, "_ADM0.shp")), quiet = TRUE)
-
+               country_shp  <- sf::st_read(
+                    dsn = file.path(PATHS$DATA_SHAPEFILES, paste0(country_iso_code, "_ADM0.shp")),
+                    quiet = TRUE)
                grid_points <- MOSAIC::generate_country_grid_n(country_shp, n_points = n_points)
-               coords <- as.data.frame(sf::st_coordinates(grid_points))
+               coords      <- as.data.frame(sf::st_coordinates(grid_points))
                rm(grid_points, country_shp)
 
-               # All variables fetched in a single API call (all grid points batched up to 1000/request)
                climate_data <- MOSAIC::get_climate_future(
-                    lat = coords$Y,
-                    lon = coords$X,
-                    date_start = date_start,
-                    date_stop = date_stop,
+                    lat = coords$Y, lon = coords$X,
+                    date_start = date_start, date_stop = date_stop,
                     climate_variables = climate_variables,
-                    climate_model = climate_model,
-                    api_key = api_key
+                    climate_model = climate_model, api_key = api_key
                )
-
                climate_data <- data.frame(
                     country_name = country_name,
-                    iso_code = country_iso_code,
-                    year = lubridate::year(climate_data$date),
+                    iso_code     = country_iso_code,
+                    year  = lubridate::year(climate_data$date),
                     month = lubridate::month(climate_data$date),
-                    week = lubridate::week(climate_data$date),
-                    doy = lubridate::yday(climate_data$date),
+                    week  = lubridate::week(climate_data$date),
+                    doy   = lubridate::yday(climate_data$date),
                     climate_data
                )
-
-               # Split by variable and save one parquet file per variable (preserves existing naming convention)
                for (climate_variable in climate_variables) {
                     variable_data <- climate_data[climate_data$variable_name == climate_variable, ]
                     if (nrow(variable_data) == 0) next
-
                     arrow::write_parquet(
                          variable_data,
-                         sink = file.path(PATHS$DATA_RAW, paste0("climate/climate_data_", climate_model, "_", climate_variable, "_", date_start, "_", date_stop, "_", country_iso_code, ".parquet"))
-                    )
+                         sink = file.path(PATHS$DATA_RAW, paste0(
+                              "climate/climate_data_", climate_model, "_", climate_variable, "_",
+                              date_start, "_", date_stop, "_", country_iso_code, ".parquet")))
                }
+               if (is_free) Sys.sleep(0.11)
+          }
+
+          if (!is_free && .Platform$OS.type != "windows") {
+               parallel::mclapply(iso_codes, process_country, mc.cores = n_cores)
+          } else {
+               lapply(iso_codes, process_country)
           }
      }
 

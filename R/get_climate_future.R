@@ -132,6 +132,10 @@ get_climate_future <- function(lat,
           stop(paste("Error: The provided climate model is not available. Please choose from:", paste(available_models, collapse = ", ")))
      }
 
+     is_free  <- identical(api_key, "free")
+     base_url <- if (is_free) "https://climate-api.open-meteo.com/v1/climate"
+                 else          "https://customer-climate-api.open-meteo.com/v1/climate"
+
      variables_param <- paste(climate_variables, collapse = ",")
      chunk_size <- 1000L
      n_chunks <- ceiling(length(lat) / chunk_size)
@@ -146,14 +150,14 @@ get_climate_future <- function(lat,
           message(glue::glue("Fetching chunk {chunk}/{n_chunks} ({length(idx)} locations)"))
 
           url <- paste0(
-               "https://customer-climate-api.open-meteo.com/v1/climate?",
+               base_url, "?",
                "latitude=", paste(lat_chunk, collapse = ","),
                "&longitude=", paste(lon_chunk, collapse = ","),
                "&start_date=", date_start,
                "&end_date=", date_stop,
                "&models=", climate_model,
                "&daily=", variables_param,
-               if (!is.null(api_key)) paste0("&apikey=", api_key) else ""
+               if (!is_free) paste0("&apikey=", api_key) else ""
           )
 
           response <- fetch_with_retry(url)
@@ -168,10 +172,11 @@ get_climate_future <- function(lat,
                # Single location -> object with $daily; multiple -> list of objects
                locations <- if (!is.null(raw$daily)) list(raw) else raw
 
-               for (loc in locations) {
+               for (j in seq_along(locations)) {
+                    loc   <- locations[[j]]
                     dates <- as.Date(substr(unlist(loc$daily$time), 1, 10))
-                    lat_j <- unlist(loc$latitude)
-                    lon_j <- unlist(loc$longitude)
+                    lat_j <- lat_chunk[j]
+                    lon_j <- lon_chunk[j]
 
                     for (variable in climate_variables) {
                          vals <- loc$daily[[variable]]
@@ -192,6 +197,8 @@ get_climate_future <- function(lat,
                warning(paste("Failed to retrieve data for chunk", chunk,
                              "— HTTP", httr::status_code(response)))
           }
+
+          if (is_free && chunk < n_chunks) Sys.sleep(0.11)
      }
 
      results_df <- do.call(rbind, results_list)
