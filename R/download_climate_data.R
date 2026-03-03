@@ -106,7 +106,8 @@ download_climate_data <- function(PATHS,
           }
      }
 
-     n_cores <- if (is_free) 1L else max(1L, parallel::detectCores() - 1L)
+     n_cores <- max(1L, parallel::detectCores() - 1L)
+     # n_cores <- if (is_free) 1L else max(1L, parallel::detectCores() - 1L)
 
      for (climate_model in climate_models) {
 
