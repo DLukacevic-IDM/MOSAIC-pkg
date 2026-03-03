@@ -93,7 +93,7 @@ files_new <- length(list.files(file.path(out_new, "climate"), pattern = "\\.parq
 speedup   <- round(t_old["elapsed"] / t_new["elapsed"], 1)
 
 # ── Write markdown report ─────────────────────────────────────────────────────
-report_path <- file.path(dirname(PATHS$ROOT), "MOSAIC-pkg", "perf_test_results.md")
+report_path <- file.path(dirname(PATHS$ROOT), "MOSAIC", "MOSAIC-pkg", "perf_test_results.md")
 
 writeLines(glue::glue(
 "# Climate Download Performance Test Results
