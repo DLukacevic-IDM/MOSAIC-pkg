@@ -127,6 +127,10 @@ download_climate_data <- function(PATHS,
                     climate_variables = climate_variables,
                     climate_model = climate_model, api_key = api_key
                )
+               if (is.null(climate_data) || nrow(climate_data) == 0) {
+                    warning(glue::glue("No data returned for {country_iso_code} / {climate_model} — skipping"))
+                    return(NULL)
+               }
                climate_data <- data.frame(
                     country_name = country_name,
                     iso_code     = country_iso_code,
